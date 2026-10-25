@@ -15,6 +15,14 @@ fn opt<T: std::fmt::Display>(v: Option<T>) -> String {
 }
 
 pub fn render(rows: &[CallRow], model_filter: Option<&str>) -> String {
+    render_with_prompts(rows, model_filter, true)
+}
+
+pub fn render_with_prompts(
+    rows: &[CallRow],
+    model_filter: Option<&str>,
+    show_prompts: bool,
+) -> String {
     let total = rows.len();
     let errors = rows.iter().filter(|r| r.outcome != "ok").count();
     let err_rate = if total == 0 {
@@ -28,7 +36,11 @@ pub fn render(rows: &[CallRow], model_filter: Option<&str>) -> String {
     } else {
         body.push_str("<table><thead><tr><th>Time (UTC)</th><th>Model</th><th>Status</th><th>Outcome</th><th>Prompt tok</th><th>Completion tok</th><th>Latency ms</th><th>TTFT ms</th><th>Cost USD</th><th>Trace</th><th>Prompt</th></tr></thead><tbody>");
         for r in rows {
-            let prompt: String = r.prompt.chars().take(120).collect();
+            let prompt: String = if show_prompts {
+                r.prompt.chars().take(120).collect()
+            } else {
+                "[hidden]".into()
+            };
             body.push_str(&format!(
                 "<tr class=\"{cls}\"><td>{ts}</td><td><a href=\"/?model={m_url}\">{m}</a></td><td>{st}</td><td>{oc}</td><td>{pt}</td><td>{ct}</td><td>{lat}</td><td>{tt}</td><td>{cost}</td><td><code>{tr}</code></td><td>{pr}</td></tr>",
                 cls = if r.outcome == "ok" { "ok" } else { "err" },

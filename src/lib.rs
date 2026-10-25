@@ -1,4 +1,5 @@
 pub mod app;
+pub mod auth;
 pub mod dashboard;
 pub mod middleware;
 pub mod parsers;

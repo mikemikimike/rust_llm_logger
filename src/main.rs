@@ -1,12 +1,13 @@
 use rust_llm_logger::{app, middleware, pricing::Pricing, store::Store, telemetry::Telemetry};
 
 use clap::{Parser, Subcommand};
+use rust_llm_logger::auth::AccessConfig;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// LLM logging reverse proxy.
-#[derive(Debug, Parser)]
+#[derive(Parser)]
 #[command(name = "rust_llm_logger", about = "LLM request logging proxy")]
 struct Args {
     #[command(subcommand)]
@@ -15,6 +16,22 @@ struct Args {
     /// Bind address (env: LLM_LOGGER_BIND)
     #[arg(long, env = "LLM_LOGGER_BIND", default_value = "127.0.0.1:3000")]
     bind: String,
+
+    /// Bearer token required for dashboard/metrics (env: LLM_LOGGER_TOKEN)
+    #[arg(long, env = "LLM_LOGGER_TOKEN", hide_env_values = true)]
+    auth_token: Option<String>,
+
+    /// Require X-LLM-Logger-Token on proxy requests, preserving upstream Authorization
+    #[arg(long, env = "LLM_LOGGER_AUTH_PROXY", default_value_t = false)]
+    auth_proxy: bool,
+
+    /// Explicitly allow an unauthenticated non-loopback listener
+    #[arg(long, default_value_t = false)]
+    insecure_allow_public: bool,
+
+    /// Show prompt text in the dashboard (stored data is unaffected)
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    dashboard_show_prompts: bool,
 
     /// SQLite path for persisted metrics (env: METRICS_DB); empty disables
     #[arg(long, env = "METRICS_DB", default_value = "")]
@@ -116,6 +133,26 @@ async fn main() {
         }
     }
 
+    let unauthenticated = args.auth_token.is_none();
+    let access = AccessConfig::new(
+        args.auth_token,
+        args.auth_proxy,
+        args.dashboard_show_prompts,
+    )
+    .unwrap_or_else(|e| fail(e));
+    let addresses: Vec<_> = tokio::net::lookup_host(&args.bind)
+        .await
+        .unwrap_or_else(|e| fail(e))
+        .collect();
+    access
+        .validate_bind(&addresses, args.insecure_allow_public)
+        .unwrap_or_else(|e| fail(e));
+    if unauthenticated
+        && args.insecure_allow_public
+        && addresses.iter().any(|a| !a.ip().is_loopback())
+    {
+        tracing::warn!("--insecure-allow-public permits network access without requiring a token");
+    }
     let allow = Arc::new(parse_allow_list(&args.allowed_backend_ports).unwrap_or_else(|e| fail(e)));
     middleware::set_inject_stream_usage(args.inject_stream_usage);
 
@@ -130,9 +167,9 @@ async fn main() {
     };
     let telemetry = Arc::new(Telemetry::new(pricing, store));
 
-    let app = app::build_app(Arc::clone(&allow), telemetry);
+    let app = app::build_app_with_access(Arc::clone(&allow), telemetry, access);
 
-    let listener = tokio::net::TcpListener::bind(&args.bind)
+    let listener = tokio::net::TcpListener::bind(addresses.as_slice())
         .await
         .unwrap_or_else(|e| panic!("Failed to bind {}: {e}", args.bind));
 

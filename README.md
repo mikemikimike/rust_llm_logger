@@ -77,7 +77,11 @@ The proxy will start on `http://127.0.0.1:3000` by default.
 
 | Flag / env | Default | Meaning |
 |---|---|---|
-| `--bind` / `LLM_LOGGER_BIND` | `127.0.0.1:3000` | Listen address (use `0.0.0.0:3001` for Tailscale) |
+| `--bind` / `LLM_LOGGER_BIND` | `127.0.0.1:3000` | Listen address; non-loopback listeners require a token or an explicit insecure override |
+| `--auth-token` / `LLM_LOGGER_TOKEN` | unset | Bearer token required on dashboard and metrics |
+| `--auth-proxy` / `LLM_LOGGER_AUTH_PROXY` | `false` | Require `X-LLM-Logger-Token` on proxy requests too |
+| `--insecure-allow-public` | `false` | Explicitly allow an unauthenticated public listener (logs a warning) |
+| `--dashboard-show-prompts=false` | `true` | Hide dashboard prompt text while retaining stored calls and usage metrics |
 | `--metrics-db` / `METRICS_DB` | empty | SQLite file; every finished call is written to the `calls` table (empty = in-memory only) |
 | `--pricing-file` / `LLM_LOGGER_PRICING` | empty | JSON price table merged over the built-in defaults |
 | `--allowed-backend-ports` / `ALLOWED_BACKEND_PORTS` | `11434,8080,8000,5000` | Ports permitted under `/proxy/{port}/` |
@@ -85,9 +89,37 @@ The proxy will start on `http://127.0.0.1:3000` by default.
 | `--log-filter` / `LLM_LOGGER_LOG` | `rust_llm_logger=info,...` | Used when `RUST_LOG` unset |
 
 ```bash
-LLM_LOGGER_BIND=0.0.0.0:3001 cargo run
+LLM_LOGGER_TOKEN="$LOGGER_TOKEN" LLM_LOGGER_BIND=0.0.0.0:3001 cargo run -- --auth-proxy
 cargo run -- --help
 ```
+
+Set `LOGGER_TOKEN` to a long, random secret first. For Tailscale, restrict network
+access to trusted peers and use the authenticated setup above. Tokens are sent in
+HTTP headers; use an encrypted transport such as Tailscale or an HTTPS reverse proxy
+when accessing the listener remotely.
+
+Dashboard and Prometheus clients send `Authorization: Bearer <token>`:
+
+```bash
+curl -H "Authorization: Bearer $LOGGER_TOKEN" http://127.0.0.1:3001/
+curl -H "Authorization: Bearer $LOGGER_TOKEN" http://127.0.0.1:3001/metrics
+```
+
+For browser use, configure a header extension to send this header only to the exact
+logger origin. Query-string tokens are not accepted. With `--auth-proxy`, proxy
+clients send `X-LLM-Logger-Token: <token>` instead; this header is consumed by the
+logger, while the client's upstream `Authorization` header is forwarded unchanged:
+
+```bash
+curl http://127.0.0.1:3001/proxy/11434/api/generate \
+  -H "X-LLM-Logger-Token: $LOGGER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama2","prompt":"Hello"}'
+```
+
+Without `--auth-proxy`, the proxy remains available without the logger token even
+when dashboard authentication is enabled. Add `--dashboard-show-prompts=false` to
+hide prompt text in the dashboard; SQLite and other telemetry still retain it.
 
 
 ### Usage

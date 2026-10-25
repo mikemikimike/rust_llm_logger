@@ -6,13 +6,14 @@ use axum::{
     middleware::{from_fn, from_fn_with_state, Next},
     response::{Html, IntoResponse, Response},
     routing::{any, get},
-    Router,
+    Extension, Router,
 };
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
+use crate::auth::{self, AccessConfig};
 use crate::telemetry::Telemetry;
 use crate::{dashboard, middleware, proxy};
 
@@ -32,6 +33,15 @@ pub fn create_http_client() -> HttpClient {
 }
 
 pub fn build_app(allow: Arc<HashSet<u16>>, telemetry: Arc<Telemetry>) -> Router {
+    build_app_with_access(allow, telemetry, AccessConfig::default())
+}
+
+pub fn build_app_with_access(
+    allow: Arc<HashSet<u16>>,
+    telemetry: Arc<Telemetry>,
+    access: AccessConfig,
+) -> Router {
+    let access = Arc::new(access);
     let state = AppState {
         client: Arc::new(create_http_client()),
         telemetry,
@@ -46,6 +56,8 @@ pub fn build_app(allow: Arc<HashSet<u16>>, telemetry: Arc<Telemetry>) -> Router 
         .route("/", get(dashboard_handler))
         .route("/metrics", get(metrics_handler))
         .merge(proxy_routes)
+        .layer(from_fn_with_state(Arc::clone(&access), auth::authorize))
+        .layer(Extension(access))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -56,7 +68,11 @@ struct DashQuery {
     limit: Option<usize>,
 }
 
-async fn dashboard_handler(State(s): State<AppState>, Query(q): Query<DashQuery>) -> Html<String> {
+async fn dashboard_handler(
+    State(s): State<AppState>,
+    Extension(access): Extension<Arc<AccessConfig>>,
+    Query(q): Query<DashQuery>,
+) -> Html<String> {
     let limit = q.limit.unwrap_or(100).clamp(1, 1000);
     let model = q.model.filter(|m| !m.is_empty());
     let telemetry = Arc::clone(&s.telemetry);
@@ -64,7 +80,11 @@ async fn dashboard_handler(State(s): State<AppState>, Query(q): Query<DashQuery>
     let rows = tokio::task::spawn_blocking(move || telemetry.recent(limit, m2.as_deref()))
         .await
         .unwrap_or_default();
-    Html(dashboard::render(&rows, model.as_deref()))
+    Html(dashboard::render_with_prompts(
+        &rows,
+        model.as_deref(),
+        access.show_prompts,
+    ))
 }
 
 async fn metrics_handler(State(s): State<AppState>) -> Response {
