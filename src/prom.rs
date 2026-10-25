@@ -17,6 +17,8 @@ const BUCKETS_MS: &[f64] = &[
     10.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0, 10000.0, 30000.0, 60000.0,
 ];
 
+const MAX_MODEL_LABELS: usize = 100;
+
 #[derive(Default)]
 struct Histogram {
     counts: Vec<u64>,
@@ -53,6 +55,7 @@ impl Histogram {
 
 #[derive(Default)]
 struct Inner {
+    model_labels: BTreeMap<String, String>,
     requests: BTreeMap<(String, String), u64>,
     prompt_tokens: BTreeMap<String, u64>,
     completion_tokens: BTreeMap<String, u64>,
@@ -79,17 +82,26 @@ impl PromMetrics {
 
     pub fn observe(&self, m: &LLMMetrics) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let label = if let Some(label) = g.model_labels.get(&m.model) {
+            label.clone()
+        } else if g.model_labels.len() >= MAX_MODEL_LABELS {
+            "other".to_string()
+        } else {
+            let label = m.model.clone();
+            g.model_labels.insert(m.model.clone(), label.clone());
+            label
+        };
         *g.requests
-            .entry((m.model.clone(), outcome_str(&m.outcome).to_string()))
+            .entry((label.clone(), outcome_str(&m.outcome).to_string()))
             .or_default() += 1;
         if let Some(p) = m.prompt_tokens {
-            *g.prompt_tokens.entry(m.model.clone()).or_default() += p as u64;
+            *g.prompt_tokens.entry(label.clone()).or_default() += p as u64;
         }
         if let Some(c) = m.completion_tokens {
-            *g.completion_tokens.entry(m.model.clone()).or_default() += c as u64;
+            *g.completion_tokens.entry(label.clone()).or_default() += c as u64;
         }
         if let Some(c) = m.estimated_cost_usd {
-            *g.cost.entry(m.model.clone()).or_default() += c;
+            *g.cost.entry(label).or_default() += c;
         }
         g.latency.observe(m.latency_ms as f64);
         if let Some(t) = m.ttft_ms {

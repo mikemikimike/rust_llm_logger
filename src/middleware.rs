@@ -14,6 +14,36 @@ pub fn set_inject_stream_usage(on: bool) {
     INJECT_STREAM_USAGE.store(on, Ordering::Relaxed);
 }
 
+/// Returns whether a proxied request invokes an inference endpoint whose
+/// request and response should be included in LLM telemetry.
+pub fn is_inference_request(method: &str, path: &str) -> bool {
+    if method != "POST" {
+        return false;
+    }
+    let path = path.trim_end_matches('/');
+    let path = if let Some(proxy_path) = path.strip_prefix("/proxy/") {
+        let Some((port, endpoint)) = proxy_path.split_once('/') else {
+            return false;
+        };
+        if port.parse::<u16>().is_err() {
+            return false;
+        }
+        format!("/{endpoint}")
+    } else {
+        path.to_string()
+    };
+    [
+        "/api/generate",
+        "/api/chat",
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/messages",
+        "/v1/embeddings",
+    ]
+    .iter()
+    .any(|endpoint| path == *endpoint)
+}
+
 /// For streamed OpenAI-compatible chat/completions requests that don't set
 /// `stream_options`, add `{"include_usage": true}` so the server emits a final usage
 /// chunk. Returns the rewritten body, or `None` when nothing should change.
@@ -47,6 +77,9 @@ pub fn inject_stream_usage(path: &str, body: &[u8]) -> Option<Vec<u8>> {
 
 /// Extracts model and prompt from the request body, then reconstructs the body
 pub async fn extract_request_data(mut req: Request, next: Next) -> Response {
+    if !is_inference_request(req.method().as_str(), req.uri().path()) {
+        return next.run(req).await;
+    }
     let body = std::mem::replace(req.body_mut(), Body::empty());
     let limited = Limited::new(body, MAX_REQUEST_BODY_BYTES);
 
@@ -180,5 +213,20 @@ mod tests {
         let (model, prompt) = parse_model_and_prompt(body);
         assert_eq!(model, "mistral");
         assert_eq!(prompt, "unparseable");
+    }
+
+    #[test]
+    fn only_supported_post_endpoints_are_inference_requests() {
+        assert!(is_inference_request("POST", "/proxy/11434/api/generate"));
+        assert!(is_inference_request(
+            "POST",
+            "/proxy/8080/v1/chat/completions/"
+        ));
+        assert!(!is_inference_request("GET", "/proxy/11434/api/tags"));
+        assert!(!is_inference_request("POST", "/proxy/11434/api/pull"));
+        assert!(!is_inference_request(
+            "PUT",
+            "/proxy/8080/v1/chat/completions"
+        ));
     }
 }
