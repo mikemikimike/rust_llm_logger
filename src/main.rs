@@ -1,4 +1,6 @@
-use rust_llm_logger::{app, middleware, pricing::Pricing, store::Store, telemetry::Telemetry};
+use rust_llm_logger::{
+    app, middleware, pricing::Pricing, redact::Redactor, store::Store, telemetry::Telemetry,
+};
 
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
@@ -37,6 +39,11 @@ struct Args {
     /// that omit it, so token usage is reported (env: LLM_LOGGER_INJECT_STREAM_USAGE)
     #[arg(long, env = "LLM_LOGGER_INJECT_STREAM_USAGE", default_value_t = false)]
     inject_stream_usage: bool,
+
+    /// Additional regular expressions whose matches are redacted from stored prompts.
+    /// May be repeated. LLM_LOGGER_REDACT_PATTERN supplies one regular expression.
+    #[arg(long = "redact-pattern", env = "LLM_LOGGER_REDACT_PATTERN")]
+    redact_patterns: Vec<String>,
 
     /// Log filter when RUST_LOG is unset
     #[arg(
@@ -128,7 +135,8 @@ async fn main() {
             Store::open(&args.metrics_db).unwrap_or_else(|e| fail(e)),
         ))
     };
-    let telemetry = Arc::new(Telemetry::new(pricing, store));
+    let redactor = Redactor::new(&args.redact_patterns).unwrap_or_else(|e| fail(e));
+    let telemetry = Arc::new(Telemetry::new_with_redactor(pricing, store, redactor));
 
     let app = app::build_app(Arc::clone(&allow), telemetry);
 
@@ -147,7 +155,27 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_allow_list;
+    use super::{parse_allow_list, Args, Redactor};
+    use clap::Parser;
+
+    #[test]
+    fn custom_regex_options_preserve_quantifier_commas() {
+        let args = Args::try_parse_from([
+            "rust_llm_logger",
+            "--redact-pattern",
+            "internal-[A-Z0-9]{8,12}",
+            "--redact-pattern",
+            "密钥内容.*",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.redact_patterns,
+            ["internal-[A-Z0-9]{8,12}", "密钥内容.*"]
+        );
+        let redactor = Redactor::new(&args.redact_patterns).unwrap();
+        assert_eq!(redactor.redact("internal-AB12CD34"), "[REDACTED]");
+        assert_eq!(redactor.redact("密钥内容12345"), "[REDACTED]");
+    }
 
     #[test]
     fn parses_ports() {

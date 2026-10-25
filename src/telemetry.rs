@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::pricing::Pricing;
 use crate::prom::PromMetrics;
-use crate::redact::redact_text;
+use crate::redact::{default_redactor, Redactor};
 use crate::store::{CallRow, Store};
 use crate::types::LLMMetrics;
 
@@ -18,29 +18,36 @@ pub struct Telemetry {
     pub pricing: Pricing,
     pub store: Option<Arc<Store>>,
     pub prom: PromMetrics,
+    redactor: Redactor,
     recent: Mutex<VecDeque<CallRow>>,
 }
 
 impl Telemetry {
     pub fn new(pricing: Pricing, store: Option<Arc<Store>>) -> Self {
+        Self::new_with_redactor(pricing, store, Redactor::default())
+    }
+
+    pub fn new_with_redactor(
+        pricing: Pricing,
+        store: Option<Arc<Store>>,
+        redactor: Redactor,
+    ) -> Self {
         Self {
             pricing,
             store,
             prom: PromMetrics::new(),
+            redactor,
             recent: Mutex::new(VecDeque::with_capacity(RING_CAPACITY)),
         }
     }
 
     /// Redact a prompt for storage/logging and cap its length.
     pub fn sanitize_prompt(prompt: &str) -> String {
-        let r = redact_text(prompt);
-        if r.chars().count() > MAX_STORED_PROMPT_CHARS {
-            let mut s: String = r.chars().take(MAX_STORED_PROMPT_CHARS).collect();
-            s.push('…');
-            s
-        } else {
-            r
-        }
+        default_redactor().redact_prefix(prompt, MAX_STORED_PROMPT_CHARS)
+    }
+
+    pub fn sanitize_prompt_with_redactor(&self, prompt: &str) -> String {
+        self.redactor.redact_prefix(prompt, MAX_STORED_PROMPT_CHARS)
     }
 
     /// Record a finished call. SQLite writes run on the blocking pool so they never
@@ -81,5 +88,22 @@ impl Telemetry {
             .take(limit)
             .cloned()
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncates_before_scanning_without_leaking_boundary_secret() {
+        let prompt = format!(
+            "{} sk_live_51Hxabcdefgh",
+            "x".repeat(MAX_STORED_PROMPT_CHARS - 5)
+        );
+        let redacted = Telemetry::sanitize_prompt(&prompt);
+        assert!(!redacted.contains("sk_live_"));
+        assert!(redacted.ends_with('…'));
+        assert_eq!(redacted.chars().count(), MAX_STORED_PROMPT_CHARS + 1);
     }
 }

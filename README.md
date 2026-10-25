@@ -230,6 +230,17 @@ RUST_LOG=rust_llm_logger=warn cargo run
 
 Use `--bind` / `LLM_LOGGER_BIND` instead of editing source.
 
+### Prompt Redaction
+
+Prompts are scanned for common API keys, tokens, JWTs, PEM private keys, and
+`password`/`api_key` assignments before they are stored. Add deployment-specific
+regular expressions with repeated `--redact-pattern` options or one expression in
+the `LLM_LOGGER_REDACT_PATTERN` environment variable:
+
+```bash
+cargo run -- --redact-pattern 'internal-[A-Z0-9]{8}'
+```
+
 ## Project Structure
 
 ```

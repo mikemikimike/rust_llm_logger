@@ -205,13 +205,21 @@ async fn handle_stream_tee(
     };
 
     if let Some(req_data) = request_data {
-        let estimated_cost_usd = ctx
-            .telemetry
-            .pricing
-            .estimate(&req_data.model, &token_usage);
+        let model = req_data.model;
+        let raw_prompt = req_data.prompt;
+        let telemetry_for_redaction = Arc::clone(&ctx.telemetry);
+        let prompt = tokio::task::spawn_blocking(move || {
+            telemetry_for_redaction.sanitize_prompt_with_redactor(&raw_prompt)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            tracing::error!("prompt redaction task failed: {error}");
+            crate::redact::REDACTED.to_string()
+        });
+        let estimated_cost_usd = ctx.telemetry.pricing.estimate(&model, &token_usage);
         let metrics = LLMMetrics {
-            model: req_data.model,
-            prompt: Telemetry::sanitize_prompt(&req_data.prompt),
+            model,
+            prompt,
             prompt_tokens: token_usage.prompt_tokens,
             completion_tokens: token_usage.completion_tokens,
             latency_ms: latency.as_millis() as u64,
