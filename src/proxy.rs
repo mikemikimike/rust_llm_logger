@@ -99,6 +99,11 @@ pub async fn proxy_handler(
     let status = parts.status.as_u16();
     strip_hop_by_hop(&mut parts.headers);
 
+    // Pass-through traffic does not need an LLM parser or a recording task.
+    if request_data.is_none() {
+        return Response::from_parts(parts, Body::new(body));
+    }
+
     let content_type = parts
         .headers
         .get("content-type")

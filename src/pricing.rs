@@ -35,6 +35,8 @@ const DEFAULTS: &[(&str, f64, f64)] = &[
     ("claude-opus-4", 0.015, 0.075),
 ];
 
+const MAX_UNKNOWN_MODEL_WARNINGS: usize = 100;
+
 pub struct Pricing {
     prices: HashMap<String, ModelPrice>,
     warned: Mutex<HashSet<String>>,
@@ -99,11 +101,14 @@ impl Pricing {
     }
 
     /// Estimated USD cost, or `None` for unknown models / missing token counts.
-    /// Unknown models are warned about once per process.
+    /// Warn once for each of the first 100 unknown models. Retained warning keys
+    /// are length-limited so arbitrary client model names cannot grow memory.
     pub fn estimate(&self, model: &str, usage: &TokenUsage) -> Option<f64> {
         let Some(price) = self.price_for(model) else {
             let mut warned = self.warned.lock().unwrap_or_else(|e| e.into_inner());
-            if warned.insert(model.to_string()) {
+            if warned.len() < MAX_UNKNOWN_MODEL_WARNINGS
+                && warned.insert(model.chars().take(128).collect())
+            {
                 tracing::warn!(
                     model,
                     "no pricing for model; estimated_cost_usd will be null"
@@ -151,6 +156,20 @@ mod tests {
         assert_eq!(p.estimate("mystery-model", &usage), None);
         assert_eq!(p.estimate("mystery-model", &usage), None);
         assert_eq!(p.warned_count(), 1);
+    }
+
+    #[test]
+    fn arbitrary_unknown_models_cannot_grow_warning_keys_without_bound() {
+        let p = Pricing::empty();
+        for i in 0..10_000 {
+            assert_eq!(
+                p.estimate(&format!("{i}-{}", "é".repeat(500)), &TokenUsage::default()),
+                None
+            );
+        }
+        let warned = p.warned.lock().unwrap();
+        assert_eq!(warned.len(), MAX_UNKNOWN_MODEL_WARNINGS);
+        assert!(warned.iter().all(|s| s.chars().count() <= 128));
     }
 
     #[test]

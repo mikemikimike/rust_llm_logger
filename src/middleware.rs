@@ -16,32 +16,25 @@ pub fn set_inject_stream_usage(on: bool) {
 
 /// Returns whether a proxied request invokes an inference endpoint whose
 /// request and response should be included in LLM telemetry.
-pub fn is_inference_request(method: &str, path: &str) -> bool {
+fn is_inference_request(method: &str, path: &str) -> bool {
     if method != "POST" {
         return false;
     }
     let path = path.trim_end_matches('/');
-    let path = if let Some(proxy_path) = path.strip_prefix("/proxy/") {
-        let Some((port, endpoint)) = proxy_path.split_once('/') else {
-            return false;
-        };
-        if port.parse::<u16>().is_err() {
-            return false;
-        }
-        format!("/{endpoint}")
-    } else {
-        path.to_string()
+    let Some((port, endpoint)) = path.strip_prefix("/proxy/").and_then(|p| p.split_once('/'))
+    else {
+        return false;
     };
-    [
-        "/api/generate",
-        "/api/chat",
-        "/v1/chat/completions",
-        "/v1/completions",
-        "/v1/messages",
-        "/v1/embeddings",
-    ]
-    .iter()
-    .any(|endpoint| path == *endpoint)
+    port.parse::<u16>().is_ok()
+        && matches!(
+            endpoint,
+            "api/generate"
+                | "api/chat"
+                | "v1/chat/completions"
+                | "v1/completions"
+                | "v1/messages"
+                | "v1/embeddings"
+        )
 }
 
 /// For streamed OpenAI-compatible chat/completions requests that don't set

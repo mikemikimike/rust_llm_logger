@@ -154,6 +154,19 @@ METRICS_DB=calls.db rust_llm_logger gc --days 7 --no-rollup
 - `llm_estimated_cost_usd_total{model}`
 - `llm_request_latency_ms` and `llm_ttft_ms` histograms
 
+Only `POST` requests to `/api/generate`, `/api/chat`, `/v1/chat/completions`,
+`/v1/completions`, `/v1/messages`, and `/v1/embeddings` are recorded as calls.
+Other requests (including health checks and model discovery) pass through without
+collecting their bodies or recording telemetry.
+
+Prometheus model labels are trimmed, ASCII-lowercased, and limited to 128 characters.
+The first 100 distinct labels retain individual series; additional models share
+`model="other"`. Existing admitted labels continue accumulating their own totals.
+The library constructor `PromMetrics::with_model_limit` can select another limit
+(zero aggregates all models). Original model names remain in stored calls and
+the dashboard, and cost estimation uses the original name. Unknown-model pricing
+warnings retain at most 100 keys, each limited to 128 characters.
+
 ```yaml
 scrape_configs:
   - job_name: llm-logger
